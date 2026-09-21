@@ -2,8 +2,8 @@
 
 Curso: Testing y Validación de Software
 Proyecto: Pruebas de Carga y Rendimiento
-Equipo: [Nombre del equipo]
-Fecha: [Fecha]
+Equipo: AMS — Santiago Escobar, Antonio Benítez, Mateo Ramírez
+Fecha: 16 de septiembre de 2026
 
 ---
 
@@ -21,7 +21,7 @@ prueba no siempre corresponde a un fallo del sistema.
 ## PERF-01 — Conexiones a la base de datos sin pool
 
 **Severidad:** Media
-**Estado:** Corrección aplicada en `feature/observabilidad`. Elimina la degradación progresiva; su efecto sobre el throughput no es concluyente con el ambiente disponible (ver PERF-04).
+**Estado:** En progreso. La corrección está integrada en `master` y elimina la degradación progresiva; su efecto sobre el throughput no es concluyente con el ambiente disponible (ver PERF-04).
 
 ### Descripción
 
@@ -31,7 +31,7 @@ prueba no siempre corresponde a un fallo del sistema.
 
 El defecto se identificó al comparar los dos scripts sobre el mismo ambiente con 20 usuarios virtuales: `register_person_k6.js` alcanzó 21 613 req/s y `register_voter_k6.js` 196 req/s.
 
-Esa comparación no es evidencia válida del costo de las conexiones. `register_voter_k6.js` pausa 100 ms por iteración, lo que fija un techo de 200 req/s con 20 usuarios virtuales, y la latencia por petición de ambos scripts fue prácticamente la misma (1,64 y 2 ms). Esa comparación no es evidencia válida del costo de las conexiones. Ambos scripts ejercitan el mismo endpoint y el mismo código, y la latencia por petición fue prácticamente igual (1,64 y 2 ms). La diferencia de throughput la produce la pausa de 100 ms que `register_voter_k6.js` aplica por iteración: con 20 usuarios virtuales, 20 / (0,100 + 0,002 s) da 196 req/s, que es exactamente lo medido. `register_person_k6.js` no pausa por defecto.
+Esa comparación no es evidencia válida del costo de las conexiones. Ambos scripts ejercitan el mismo endpoint y el mismo código, y la latencia por petición fue prácticamente igual (1,64 y 2 ms). La diferencia de throughput la produce la pausa de 100 ms que `register_voter_k6.js` aplica por iteración: con 20 usuarios virtuales, 20 / (0,100 + 0,002 s) da 196 req/s, que es exactamente lo medido. `register_person_k6.js` no pausa por defecto.
 
 La evidencia del defecto es la de la sección siguiente: la degradación progresiva de la latencia del servidor bajo carga constante, registrada con Actuator.
 
@@ -173,27 +173,6 @@ Baja
 
 ---
 
-## Formato 2: Tabla de seguimiento
-
-| ID | Escenario | Resultado esperado | Resultado obtenido | Estado | Prioridad |
-| --- | --- | --- | --- | --- | --- |
-| PERF-01 | Load | Throughput acorde a la capacidad del motor | 196 req/s contra 21 613 req/s en el camino sin el defecto | [PENDIENTE] | Alta |
-| PERF-02 | Todos | Resultado incorrecto < 1 % | 1,97 % y 19,58 % al encadenar corridas | Resuelto | Media |
-| PERF-03 | Stress | Sin timeouts | Una petición con timeout a los 2 s de arrancar | Abierto | Baja |
-
----
-
-## Convenciones de Estado
-
-Abierto: Defecto identificado sin corrección aplicada.
-En progreso: En proceso de corrección.
-Resuelto: Corregido y validado con nuevas pruebas.
-
----
-
-Universidad de La Sabana — Facultad de Ingeniería
-Curso: Testing y Validación de Software
-
 ## PERF-04 — Inyector y servidor comparten la CPU física
 
 **Severidad:** Media (afecta la validez de las mediciones, no el comportamiento del servicio)
@@ -212,3 +191,27 @@ La máquina virtual tiene dos vCPU asignadas, pero corren sobre el mismo procesa
 ### Mitigación propuesta
 
 Ejecutar k6 desde una máquina física distinta a la que aloja la VM. Mientras tanto, las comparaciones entre corridas deben apoyarse en las métricas del servidor y no en las de k6.
+
+---
+
+## Formato 2: Tabla de seguimiento
+
+| ID | Escenario | Resultado esperado | Resultado obtenido | Estado | Prioridad |
+| --- | --- | --- | --- | --- | --- |
+| PERF-01 | Load | Latencia del servidor estable bajo carga constante | Sin pool crece de 8 a 115 ms en el tramo sostenido; con pool se mantiene entre 40 y 55 ms | En progreso | Media |
+| PERF-02 | Todos | Resultado incorrecto < 1 % | 1,97 % y 19,58 % al encadenar corridas | Resuelto | Media |
+| PERF-03 | Stress | Sin timeouts | Una petición con timeout a los 2 s de arrancar | Abierto | Baja |
+| PERF-04 | Load | Latencia del cliente atribuible al servicio | ~54 y ~135 ms por petición fuera de la aplicación; 37 timeouts en un segundo con el servidor bajo 1,4 s | Abierto | Media |
+
+---
+
+## Convenciones de Estado
+
+Abierto: Defecto identificado sin corrección aplicada.
+En progreso: En proceso de corrección.
+Resuelto: Corregido y validado con nuevas pruebas.
+
+---
+
+Universidad de La Sabana — Facultad de Ingeniería
+Curso: Testing y Validación de Software
