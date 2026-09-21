@@ -31,3 +31,6 @@ perf/lab/results/
 perf/lab/pool/
 perf/lab/deck/out/
 __pycache__/
+
+!perf/results/actuator-*/
+!perf/results/load-*.json
