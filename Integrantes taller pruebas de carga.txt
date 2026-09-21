@@ -1,0 +1,18 @@
+Taller de Pruebas de Carga y Rendimiento
+Testing y Validación de Software
+Universidad de La Sabana
+Septiembre de 2026
+
+Integrantes
+
+Santiago Escobar
+Bloque A: ejecución de escenarios, matriz de rendimiento y análisis de resultados
+
+Antonio Benítez
+Bloque B: observabilidad del servidor y gestión de defectos
+
+Mateo Ramírez
+Bloque C: integración continua, estructura del repositorio y plan de pruebas
+
+Repositorio: https://github.com/DrearSanti/TYVS-Taller_Pruebas_de_carga_AMS
+Wiki: https://github.com/DrearSanti/TYVS-Taller_Pruebas_de_carga_AMS/wiki
