@@ -18,77 +18,60 @@ prueba no siempre corresponde a un fallo del sistema.
 
 ## Formato 1: Lista detallada
 
-## Defecto PERF-01 — Conexiones a base de datos sin pool
+## PERF-01 — Conexiones a la base de datos sin pool
 
-- Capa afectada: Infraestructura de persistencia
-- Escenario: Load Test (rampa a 200 VUs)
-- Clase: `RegistryRepository`
+**Severidad:** Media
+**Estado:** Corrección aplicada en `feature/observabilidad`. Elimina la degradación progresiva; su efecto sobre el throughput no es concluyente con el ambiente disponible (ver PERF-04).
 
 ### Descripción
 
-`getConnection()` abría una conexión nueva con `DriverManager` en cada operación:
+`RegistryRepository` abría una conexión nueva mediante `DriverManager.getConnection` en cada operación. Como `registerVoter` ejecuta dos operaciones por petición, cada petición creaba y destruía dos conexiones.
 
-```java
-private Connection getConnection() throws SQLException {
-    return DriverManager.getConnection(jdbcUrl, username, password);
-}
-```
+### Evidencia inicial
 
-`registerVoter` ejecuta dos operaciones por petición, `existsById` y `save`, de modo
-que cada petición atendida creaba y destruía dos conexiones. Bajo carga sostenida
-eso son miles de conexiones por segundo, con su costo de establecimiento asociado.
+El defecto se identificó al comparar los dos scripts sobre el mismo ambiente con 20 usuarios virtuales: `register_person_k6.js` alcanzó 21 613 req/s y `register_voter_k6.js` 196 req/s.
 
-### Evidencia
+Esa comparación no es evidencia válida del costo de las conexiones. `register_voter_k6.js` pausa 100 ms por iteración, lo que fija un techo de 200 req/s con 20 usuarios virtuales, y la latencia por petición de ambos scripts fue prácticamente la misma (1,64 y 2 ms). Esa comparación no es evidencia válida del costo de las conexiones. Ambos scripts ejercitan el mismo endpoint y el mismo código, y la latencia por petición fue prácticamente igual (1,64 y 2 ms). La diferencia de throughput la produce la pausa de 100 ms que `register_voter_k6.js` aplica por iteración: con 20 usuarios virtuales, 20 / (0,100 + 0,002 s) da 196 req/s, que es exactamente lo medido. `register_person_k6.js` no pausa por defecto.
 
-Comparación de dos scripts sobre el mismo hardware y los mismos 20 usuarios
-virtuales, ejercitando caminos de código distintos:
-
-| Script | Peticiones | Throughput | p95 |
-| --- | --- | --- | --- |
-| register_person_k6.js | 6 484 046 | 21 613 req/s | 1,64 ms |
-| register_voter_k6.js | 58 920 | 196 req/s | 2 ms |
-
-Ciento diez veces de diferencia en throughput entre dos caminos del mismo servicio.
-Medición tomada por [autor], archivo `perf/results/summary-baseline.json`.
-
-### Impacto
-
-Límite artificial en el throughput del endpoint de registro de votantes, sin
-relación con la lógica de negocio ni con la capacidad del motor de base de datos.
-
-### Causa
-
-Ausencia de pool de conexiones. Cada operación paga el costo completo de
-establecer una conexión nueva.
+La evidencia del defecto es la de la sección siguiente: la degradación progresiva de la latencia del servidor bajo carga constante, registrada con Actuator.
 
 ### Corrección aplicada
 
-Se introdujo HikariCP como origen de datos. `RegistryRepository` ahora recibe un
-`DataSource` inyectado y `getConnection()` solicita una conexión al pool. Los
-métodos de consulta y escritura no cambiaron: ya usaban `try-with-resources`, y
-cerrar una conexión de Hikari la devuelve al pool en lugar de destruirla.
+Se incorporó HikariCP 5.1.0. `RegistryConfig` construye un `HikariDataSource` (pool `registry-pool`, 20 conexiones) y lo inyecta en `RegistryRepository`, que ahora obtiene sus conexiones de ahí. Commit `2423923`.
 
-Rama: `feature/observabilidad`
+### Medición antes y después
 
-### Resultado de la corrección
+Ambiente: Ubuntu Server 24.04.4, 2 vCPU, 4 GB de RAM, OpenJDK 17.0.20, red VMnet1 en solo anfitrión (192.168.231.129). k6 en el anfitrión Windows. Escenario `load` (rampa a 200 VUs, 14 min), una corrida por configuración, servicio reiniciado antes de cada una. Métricas del servidor muestreadas cada minuto con `perf/scripts/capturar_actuator.ps1`.
 
-| Métrica | Antes | Después | Variación |
-| --- | --- | --- | --- |
-| p95 | [PENDIENTE] | [PENDIENTE] | |
-| Throughput medio | [PENDIENTE] | [PENDIENTE] | |
-| jvm.threads.live en el pico | [PENDIENTE] | [PENDIENTE] | |
+| Métrica | Antes (sin pool) | Después (HikariCP) |
+| --- | --- | --- |
+| Peticiones | 742 489 | 513 233 |
+| Throughput medio | 884 req/s | 611 req/s |
+| p95 según k6 | 294,6 ms | 384,5 ms |
+| Threshold p95 ≤ 300 ms | Cumple | No cumple |
+| Peticiones fallidas (timeout de 2 s) | 175 (0,0236 %) | 44 (0,0086 %) |
+| Latencia media según el servidor | 37,4 ms | 44,1 ms |
+| Latencia media del servidor en el tramo sostenido | crece de 8 a 115 ms | estable entre 40 y 55 ms |
+| CPU del proceso en el pico | 93–99 % | 99–100 % |
+| Pausa máxima de GC | 64 ms | 67 ms |
 
-Ambas mediciones se tomaron en el mismo ambiente, con el servicio en máquina
-virtual y k6 en el anfitrión, y lo único que varió entre ellas fue la
-introducción del pool.
+Artefactos: `perf/results/load-antes.json`, `perf/results/load-despues.json`, `perf/results/actuator-antes/`, `perf/results/actuator-despues/`.
 
-### Estado
+### Análisis
 
-[PENDIENTE: Resuelto, una vez validada la corrección con la medición del después]
+Vista desde el cliente, la corrección empeoró el sistema: un 31 % menos de throughput y el p95 por encima del SLO.
 
-### Prioridad
+Vista desde el servidor, la latencia media casi no cambió (37,4 frente a 44,1 ms). Esa cifra incluye el tiempo que un hilo espera por una conexión del pool, de modo que el pool no es el cuello de botella; una consulta durante el pico mostró 7 de 20 conexiones activas y ningún hilo en espera.
 
-Alta
+La diferencia entre las dos vistas es el tiempo que cada petición pasa fuera de la aplicación: unos 54 ms en la corrida sin pool y unos 135 ms en la corrida con pool. Ese tiempo no lo gasta el código corregido, y la explicación más probable es el ambiente descrito en PERF-04.
+
+Lo que sí se observa del lado del servidor es un cambio de forma. Sin pool, la latencia crece de manera continua con la carga constante y el throughput cae de 1 270 a 670 req/s a lo largo del tramo sostenido. Con pool, ambas se mantienen planas. Las curvas se cruzan hacia el minuto 11, por lo que en una corrida más larga es previsible que la configuración con pool atienda más tráfico en total. La configuración con pool además falló cuatro veces menos peticiones.
+
+La degradación progresiva sin pool no se explica por el crecimiento de la tabla, porque la corrida con pool también inserta cientos de miles de filas sin degradarse. Apunta a un costo que se acumula al abrir y cerrar conexiones; identificarlo con precisión exige métricas que no se recolectaron.
+
+### Pendiente
+
+Repetir ambas corridas con el inyector en una máquina física distinta, y ejecutar al menos una corrida de resistencia para confirmar el cruce de las curvas. Cada configuración se midió una sola vez, así que no hay estimación de la variación entre corridas.
 
 ---
 
@@ -116,7 +99,7 @@ Tasas de resultado incorrecto observadas al encadenar tres escenarios sin
 reiniciar el servicio: 1,97 % en la segunda corrida y 19,58 % en la tercera,
 suficiente para cruzar el umbral del 1 % y marcar el threshold en rojo.
 
-Medición tomada por [autor].
+Medición tomada por Santiago Escobar.
 
 ### Impacto
 
@@ -163,7 +146,7 @@ clases y compilación JIT antes de alcanzar el estado estacionario.
 Una petición de 2 190 256, equivalente a 0,0000457 % de resultado incorrecto, muy
 por debajo de cualquier umbral. El detalle está en la página Resultados de la wiki.
 
-Medición tomada por [autor].
+Medición tomada por Santiago Escobar.
 
 ### Impacto
 
@@ -210,3 +193,22 @@ Resuelto: Corregido y validado con nuevas pruebas.
 
 Universidad de La Sabana — Facultad de Ingeniería
 Curso: Testing y Validación de Software
+
+## PERF-04 — Inyector y servidor comparten la CPU física
+
+**Severidad:** Media (afecta la validez de las mediciones, no el comportamiento del servicio)
+**Estado:** Abierto
+
+### Descripción
+
+La máquina virtual tiene dos vCPU asignadas, pero corren sobre el mismo procesador físico que el anfitrión donde se ejecuta k6. Cuando el anfitrión está cargado, el hipervisor le resta tiempo de CPU a la VM y k6 compite por los mismos núcleos. La separación del inyector es lógica, no física.
+
+### Evidencia
+
+- Durante la rampa del escenario `load`, el anfitrión reportó alrededor de 80 % de uso de CPU.
+- Con latencias del servidor similares entre corridas (37,4 y 44,1 ms), el tiempo fuera de la aplicación pasó de ~54 a ~135 ms.
+- En la corrida con pool, 37 timeouts ocurrieron entre los segundos 620 y 621, mientras la latencia máxima registrada por el servidor en ese minuto fue de unos 1,4 s, por debajo del timeout de 2 s de k6. Esas peticiones se demoraron antes de llegar al controlador: en la cola de Tomcat o con la VM sin tiempo de CPU.
+
+### Mitigación propuesta
+
+Ejecutar k6 desde una máquina física distinta a la que aloja la VM. Mientras tanto, las comparaciones entre corridas deben apoyarse en las métricas del servidor y no en las de k6.
