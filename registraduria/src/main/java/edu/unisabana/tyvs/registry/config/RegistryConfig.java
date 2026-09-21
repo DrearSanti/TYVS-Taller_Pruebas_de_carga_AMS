@@ -1,8 +1,11 @@
 package edu.unisabana.tyvs.registry.config;
 
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 import edu.unisabana.tyvs.registry.application.port.out.RegistryRepositoryPort;
 import edu.unisabana.tyvs.registry.application.usecase.Registry;
 import edu.unisabana.tyvs.registry.infrastructure.persistence.RegistryRepository;
+import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -20,15 +23,28 @@ import org.springframework.context.annotation.Configuration;
  * (el nombre del bean es el nombre del METODO), Spring aborta el arranque con
  * BeanDefinitionOverrideException. Parametrizar la URL hace innecesarios esos
  * beans duplicados.
+ *
+ * El DataSource usa HikariCP. Antes cada operacion abria una conexion nueva
+ * con DriverManager, y registerVoter hace dos operaciones por peticion, de modo
+ * que con 600 usuarios virtuales se creaban y destruian miles de conexiones por
+ * segundo. Ese era el cuello de botella del taller de carga.
  */
 @Configuration
 public class RegistryConfig {
 
     @Bean
-    public RegistryRepositoryPort registryRepositoryPort(
-            @Value("${registry.jdbc-url:jdbc:h2:mem:regdb;DB_CLOSE_DELAY=-1}") String jdbcUrl)
-            throws Exception {
-        RegistryRepository repo = new RegistryRepository(jdbcUrl);
+    public DataSource dataSource(
+            @Value("${registry.jdbc-url:jdbc:h2:mem:regdb;DB_CLOSE_DELAY=-1}") String jdbcUrl) {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(jdbcUrl);
+        config.setMaximumPoolSize(20);
+        config.setPoolName("registry-pool");
+        return new HikariDataSource(config);
+    }
+
+    @Bean
+    public RegistryRepositoryPort registryRepositoryPort(DataSource dataSource) throws Exception {
+        RegistryRepository repo = new RegistryRepository(dataSource);
         repo.initSchema();
         return repo;
     }
