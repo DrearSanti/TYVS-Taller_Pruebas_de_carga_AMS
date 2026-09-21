@@ -1,0 +1,107 @@
+name: perf-tests
+
+on:
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      escenario:
+        description: 'Escenario a ejecutar'
+        required: true
+        default: baseline
+        type: choice
+        options: [baseline, load, stress, spike, arrival]
+  schedule:
+    # Escenario de carga todas las noches a la 1:00 de Colombia (6:00 UTC).
+    - cron: '0 6 * * *'
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  k6-perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      # En un pull request solo corre 'baseline' (5 min). 'load' dura 14 min y
+      # 'stress' 10: bloquearian la revision, asi que van en la ejecucion
+      # nocturna y bajo demanda.
+      ESCENARIO: >-
+        ${{ github.event_name == 'workflow_dispatch' && inputs.escenario
+         || github.event_name == 'schedule' && 'load'
+         || 'baseline' }}
+      K6_VERSION: v0.49.0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Empaquetar el servicio
+        run: mvn -B -DskipTests clean package
+        working-directory: registraduria
+
+      # El workflow levanta el servicio EN EL PROPIO RUNNER. Sin este paso no
+      # habria nada que cargar: es el error mas comun al llevar pruebas de
+      # rendimiento a integracion continua.
+      #
+      # El bucle de reintentos no es reemplazable por un 'sleep 30' fijo: a
+      # veces alcanza y a veces no, segun la carga del runner, y produce
+      # pruebas inestables.
+      - name: Levantar el servicio en segundo plano
+        run: |
+          nohup java -jar target/registraduria-1.0-SNAPSHOT.jar > /tmp/app.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/actuator/health > /dev/null; then
+              echo "Servicio arriba tras $((i*2))s"; exit 0
+            fi
+            sleep 2
+          done
+          echo "El servicio no arranco a tiempo"; cat /tmp/app.log; exit 1
+        working-directory: registraduria
+
+      # Version fija: una corrida de rendimiento que cambia de version de
+      # herramienta entre ejecuciones no es comparable consigo misma.
+      - name: Instalar k6
+        run: |
+          curl -sSL "https://github.com/grafana/k6/releases/download/${K6_VERSION}/k6-${K6_VERSION}-linux-amd64.tar.gz" \
+            | sudo tar xz --strip-components=1 -C /usr/local/bin "k6-${K6_VERSION}-linux-amd64/k6"
+          k6 version
+
+      - name: Preparar carpeta de resultados
+        run: mkdir -p perf/results
+
+      # register_voter_k6.js es el unico script que corre aqui, y es
+      # deliberado: valida latencia Y resultado de negocio. register_person_k6
+      # solo mira que el cuerpo diga VALID, asi que el gate de negocio de este
+      # script es estrictamente mas fuerte.
+      #
+      # Los thresholds del script SON el gate. Si el p95 supera el SLO o la
+      # tasa de error pasa del 1%, k6 termina con codigo 99 y el paso falla
+      # solo. No hace falta parsear el JSON ni escribir comparaciones.
+      - name: Gate de rendimiento y de negocio
+        run: |
+          k6 run perf/scripts/register_voter_k6.js \
+            --env BASE_URL=http://localhost:8080 \
+            --env SCENARIO=${ESCENARIO}
+
+      - name: Log del servicio si algo fallo
+        if: failure()
+        run: cat /tmp/app.log
+
+      # Solo los resumenes. NO se sube el volcado de '-o json=', que para una
+      # sola corrida puede pesar mas de doscientos megabytes.
+      - name: Publicar artefactos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results-${{ env.ESCENARIO }}-${{ github.run_number }}
+          path: perf/results/summary-*.json
+          if-no-files-found: warn
