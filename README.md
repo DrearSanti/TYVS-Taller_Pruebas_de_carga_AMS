@@ -76,24 +76,44 @@ Los cinco primeros fijan **usuarios concurrentes**. `arrival` fija **peticiones 
 
 - JDK 17
 - Maven 3.8 o superior
-- k6 v0.49.0 (`winget install k6 --source winget` en Windows)
+- k6 0.49 o superior
+
+Instalación de k6 según el sistema:
+
+| Sistema | Comando |
+| --- | --- |
+| macOS | `brew install k6` |
+| Windows | `winget install k6 --source winget` |
+| Linux | Ver la [documentación oficial de k6](https://grafana.com/docs/k6/latest/set-up/install-k6/) |
+
+El pipeline fija la versión `v0.49.0` de forma explícita, para que las corridas automáticas sean comparables entre sí a lo largo del tiempo. Localmente no hace falta esa versión exacta: se verificó que k6 2.2.0 ejecuta los scripts sin modificaciones y genera un resumen con las mismas claves de primer nivel que los archivos versionados. Si reproduce las corridas con una versión distinta a la del pipeline, anótelo junto a sus resultados.
 
 ## Ejecución local
 
+Hacen falta **dos terminales**: una queda ocupada por el servicio, la otra ejecuta las verificaciones y k6.
+
+Terminal 1, compilar y levantar el servicio:
+
 ```bash
-# 1. Compilar y levantar el servicio
 cd registraduria
 mvn -DskipTests clean package
 java -jar target/registraduria-1.0-SNAPSHOT.jar
+```
 
-# 2. Verificar que responde (otra terminal)
+La primera compilación descarga las dependencias de Maven y puede tardar varios minutos; las siguientes toman segundos. El servicio queda en primer plano y termina de arrancar con la línea `Started RegistryApplication`.
+
+Terminal 2, verificar y ejecutar:
+
+```bash
 curl http://localhost:8080/actuator/health
 
-# 3. Ejecutar un escenario, DESDE LA RAÍZ del repositorio
+# Desde la RAÍZ del repositorio, no desde registraduria/
 k6 run perf/scripts/register_voter_k6.js \
   --env BASE_URL=http://localhost:8080 \
   --env SCENARIO=baseline
 ```
+
+> **La corrida sobrescribe un archivo versionado.** La función `handleSummary` escribe en `perf/results/summary-voters-<escenario>.json`, y esos archivos están en el repositorio: son los resultados oficiales de la campaña. Ejecutar un escenario localmente los reemplaza por los suyos. Revise `git status` antes de hacer commit, y restaure con `git checkout -- perf/results/` si no quiere conservar su corrida.
 
 **Reinicie el servicio entre escenarios.** La base H2 vive en memoria mientras viva el proceso de Java. Sin reinicio, los identificadores que genera el script chocan con los de la corrida anterior y todo lo que esperaba `VALID` devuelve `DUPLICATED`, lo que dispara la métrica de resultado incorrecto sin que el servicio tenga ningún problema. Si no puede reiniciar, desplace el rango con `--env ID_BASE=700000000`.
 
